@@ -4,8 +4,7 @@ namespace Samian.Domain.Enums;
 // never renumber an existing member, only append new ones.
 public enum OrderStatus
 {
-    Draft = 1,
-    Pending = 2,
+    Draft = 1,    
     Placed = 3,
     Confirmed = 4,
     Shipped = 5,

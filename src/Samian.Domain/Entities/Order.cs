@@ -202,6 +202,8 @@ public class Order : AggregateRoot
 
     public Order ShipOrder(DateTimeOffset now)
     {
+        // the application service calls StockAvailabilityService.DeductStock -> SaveChangeAsync -> ShipOrder.
+        // the boundary is why this isn't enforced here.
         EnsureCanMoveTo(OrderStatus.Shipped);
 
         Status = OrderStatus.Shipped;
@@ -230,8 +232,7 @@ public class Order : AggregateRoot
     // cancel anything up to (but not including) shipment; Delivered and Cancelled are terminal.
     public Order CancelOrder(DateTimeOffset now, string? reason = null)
     {
-        Guard.AgainstInvalidState(Status is OrderStatus.Draft or OrderStatus.Pending
-                                       or OrderStatus.Placed or OrderStatus.Confirmed,
+        Guard.AgainstInvalidState(Status is OrderStatus.Draft or OrderStatus.Placed or OrderStatus.Confirmed,
             () => new InvalidOrderStateException(Status, OrderStatus.Cancelled));
 
         var cancelledFrom = Status;
@@ -248,7 +249,6 @@ public class Order : AggregateRoot
     private static bool CanMove(OrderStatus from, OrderStatus to) => (from, to) switch
     {
         (OrderStatus.Draft, OrderStatus.Placed) => true,
-        (OrderStatus.Pending, OrderStatus.Placed) => true,
         (OrderStatus.Placed, OrderStatus.Confirmed) => true,
         (OrderStatus.Confirmed, OrderStatus.Shipped) => true,
         (OrderStatus.Shipped, OrderStatus.Delivered) => true,
@@ -260,7 +260,7 @@ public class Order : AggregateRoot
 
     // Lines are only mutable while the order is ours to edit; after Placed the customer agreed to it.
     private void EnsureEditable() =>
-        Guard.AgainstInvalidState(Status is OrderStatus.Draft or OrderStatus.Pending,
+        Guard.AgainstInvalidState(Status is OrderStatus.Draft,
             () => new InvalidOrderStateException(Status, Status));
 
     private OrderLine FindLine(Guid lineId)
