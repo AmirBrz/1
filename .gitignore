@@ -482,3 +482,8 @@ $RECYCLE.BIN/
 
 # Vim temporary swap files
 *.swp
+
+# Samian sample: SQLite database created by DatabaseInitializer on startup
+*.db
+*.db-shm
+*.db-wal

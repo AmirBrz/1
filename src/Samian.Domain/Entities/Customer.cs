@@ -15,7 +15,12 @@ public class Customer : AggregateRoot
 
     public string Address { get; private set; }
 
-    public static Customer Create(string name, string address)
+    // Nullable: a customer can be registered before anybody knows how to email them, and a required
+    // email would force fake data into the sample. Order handlers use it only as an ADDRESS, never as
+    // a business rule — no invariant depends on it.
+    public string? Email { get; private set; }
+
+    public static Customer Create(string name, string address, string? email = null)
     {
         // The factory is the invariant gate: an empty-named customer should never reach the database.
         Guard.AgainstEmpty(name, () => new DomainException("Customer name is required."));
@@ -25,7 +30,8 @@ public class Customer : AggregateRoot
         {
             Id = Guid.NewGuid(),
             Name = name,
-            Address = address
+            Address = address,
+            Email = email
         };
     }
 
@@ -33,6 +39,15 @@ public class Customer : AggregateRoot
     {
         Guard.AgainstEmpty(address, () => new DomainException("Customer address is required."));
         Address = address;
+        return this;
+    }
+
+    // Contact details rotate through the root for the same reason credentials do: an unvalidated write
+    // would let "support@" reach a subscriber that then silently fails to send.
+    public Customer ChangeEmail(string? email)
+    {
+        Guard.AgainstEmpty(email ?? string.Empty, () => new DomainException("Customer e-mail is required."));
+        Email = email;
         return this;
     }
 }

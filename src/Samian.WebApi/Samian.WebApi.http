@@ -1,6 +1,85 @@
-@Samian.WebApi_HostAddress = http://localhost:5144
+@host = http://localhost:5144
 
-GET {{Samian.WebApi_HostAddress}}/weatherforecast/
-Accept: application/json
+### 1. Sign in as the seeded admin (catalogue writes need the Admin role).
+POST {{host}}/api/auth/login
+Content-Type: application/json
+
+{
+  "userName": "admin",
+  "password": "Admin#1234"
+}
+
+### Copy "token" from the response above into a variable for every call below.
+@token = PASTE_ACCESS_TOKEN_HERE
+
+### 2. List the seeded catalogue (cached: second call is served from Redis/L1 memory).
+GET {{host}}/api/products?page=0&pageSize=20
+Authorization: Bearer {{token}}
+
+### 3. Create a customer for the order.
+POST {{host}}/api/customers
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "name": "Persian Tools Co.",
+  "address": "Tehran, Jomhouri Ave, No. 45",
+  "email": "orders@persiantools.example"
+}
+
+### 4. Open a draft order in IRR. Keep the "id" and copy it into @orderId below.
+@orderId = PASTE_ORDER_ID_HERE
+@customerId = PASTE_CUSTOMER_ID_HERE
+
+POST {{host}}/api/orders
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "customerId": "{{customerId}}",
+  "currency": "IRR"
+}
+
+### 5. Add lines (any seeded product id from step 2).
+@productId = PASTE_PRODUCT_ID_HERE
+
+POST {{host}}/api/orders/{{orderId}}/lines
+Content-Type: application/json
+Authorization: Bearer {{token}}
+
+{
+  "productId": "{{productId}}",
+  "quantity": 2
+}
+
+### 6. Let the configured volume policy compute the discount (5% over 1,000,000 IRR).
+POST {{host}}/api/orders/{{orderId}}/discount/automatic
+Authorization: Bearer {{token}}
+
+### 7. Walk the state machine: place -> confirm -> ship -> deliver.
+###    Each step returns the full document; each illegal jump returns 409 Problem Details.
+POST {{host}}/api/orders/{{orderId}}/place
+Authorization: Bearer {{token}}
 
 ###
+POST {{host}}/api/orders/{{orderId}}/confirm
+Authorization: Bearer {{token}}
+
+###
+POST {{host}}/api/orders/{{orderId}}/ship
+Authorization: Bearer {{token}}
+
+###
+POST {{host}}/api/orders/{{orderId}}/deliver
+Authorization: Bearer {{token}}
+
+### 8. The finished document, with its ORD-000001 number and every timestamp.
+GET {{host}}/api/orders/{{orderId}}
+Authorization: Bearer {{token}}
+
+### 9. Negative checks worth trying on purpose:
+###    401 — no token:   GET {{host}}/api/products
+###    403 — clerk POSTs a product (login as salesclerk / Sales#1234)
+###    409 — place an empty draft, or ship a draft
+###    400 — {"userName":"x","password":"y"} to /api/auth/login (too-short user name)
+###    401 — unknown user AND wrong password give byte-identical bodies

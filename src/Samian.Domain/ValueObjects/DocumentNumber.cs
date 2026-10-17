@@ -35,10 +35,29 @@ public sealed partial class DocumentNumber : ValueObject
 
     // Factory is the only way in: the sequence comes from IDocumentNumberGenerator (Infrastructure owns
     // the counter), the format is validated here, so a malformed number cannot be constructed.
+    //
+    // Decision recorded: NO year in the number (ORD-000123, not ORD-1405-000123). Per-year sequences
+    // would add a second counter dimension for no business benefit here.
     public static DocumentNumber From(DocumentSeries series, int sequence)
     {
         Guard.AgainstNonPositive(sequence, () => new DomainException("Document sequence must be greater than zero."));
+
+        // PadLeft does not truncate: sequence 1_000_000 would render 7 digits, and this value object
+        // would then produce a string its own regex cannot parse — Parse(From(...).Value) must always
+        // round-trip, so the capacity is enforced at construction, not discovered at read time.
+        Guard.AgainstInvalidState(sequence < PowerOfTen(SequenceDigits),
+            () => new DomainException($"Document sequence must fit in {SequenceDigits} digits."));
+
         return new DocumentNumber(series, sequence);
+    }
+
+    private static int PowerOfTen(int digits)
+    {
+        var result = 1;
+        for (var i = 0; i < digits; i++)
+            result *= 10;
+
+        return result;
     }
 
     // Reading a value that came from the database/API: parse-or-fail, never silently accept.
@@ -51,13 +70,18 @@ public sealed partial class DocumentNumber : ValueObject
             throw new DomainException($"'{value}' is not a valid document number (expected ABC-000001).");
 
         var sequence = int.Parse(match.Groups["sequence"].Value);
-        var series = Enum.GetValues<DocumentSeries>()
-            .FirstOrDefault(s => s.ToPrefix() == match.Groups["prefix"].Value);
+        var prefix = match.Groups["prefix"].Value;
 
-        Guard.AgainstInvalidState(series.ToPrefix() == match.Groups["prefix"].Value,
-            () => new DomainException($"'{value}' has an unknown document series."));
+        // FirstOrDefault on an enum returns 0 when nothing matches, and 0 is NOT a defined
+        // DocumentSeries — the old code then called series.ToPrefix() inside the guard and threw
+        // ArgumentOutOfRangeException instead of the friendly DomainException it was trying to raise.
+        // Searching for a nullable keeps "no match" representable.
+        var series = Enum.GetValues<DocumentSeries>().Cast<DocumentSeries?>()
+            .FirstOrDefault(s => s!.Value.ToPrefix() == prefix);
 
-        return new DocumentNumber(series, sequence);
+        Guard.AgainstNull(series, () => new DomainException($"'{value}' has an unknown document series."));
+
+        return new DocumentNumber(series!.Value, sequence);
     }
 
     public bool IsSameSeries(DocumentNumber other) => Series == other.Series;

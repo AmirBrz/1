@@ -12,6 +12,7 @@ namespace Samian.Domain.Events;
 // events were meant to remove.
 public record OrderPlaced(
     Guid AggregateId,
+    Guid CustomerId,
     DocumentNumber? Number,
     Money Total,
     int LineCount,

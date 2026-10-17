@@ -22,8 +22,9 @@ public class Order : AggregateRoot
         Discount = Money.Zero(Currency);
     }
 
-    // Single-currency system, decided once. If multi-currency ever lands, this const becomes a
-    // constructor parameter and AddLine's currency guard starts doing real work.
+    // Decision recorded: ONE currency per order, chosen at creation — an ERP document is quoted,
+    // placed and invoiced in a single currency. IRR is only the DEFAULT, not the only legal value,
+    // which is why Create takes a currency instead of hard-reading this const.
     public const string DefaultCurrency = "IRR";
 
     // Cross-aggregate reference BY IDENTITY ONLY (Guid, matching Customer.Id).
@@ -72,18 +73,27 @@ public class Order : AggregateRoot
 
     // A Draft order is never valid in a half-built state, so callers don't `new Order()` and assign
     // properties one at a time: the factory enforces the invariant at the moment of creation.
-    public static Order Create(Guid customerId)
+    public static Order Create(Guid customerId, string currency = DefaultCurrency)
     {
         Guard.AgainstInvalidState(customerId != Guid.Empty,
             () => new DomainException("A customer is required to create an order."));
 
+        // Money's own constructor validates the currency code (3 uppercase letters), so building the
+        // zero amount once both checks the input and fixes the currency that every later
+        // AddLine/ApplyDiscount guard compares against. Bad input fails here, not on line 4.
+        var zero = Money.Zero(currency);
+
         var order = new Order
         {
+            // Client-assigned identity, same as Product.Create and Customer.Create. Reason: only SQL
+            // Server generates keys for Guid columns; SQLite/MySQL cannot, and "the database will fill
+            // it in" would fail at the first insert. A Guid aggregate id is a domain fact, not a row id.
+            Id = Guid.NewGuid(),
             CustomerId = customerId,
-            Currency = DefaultCurrency,
+            Currency = zero.Currency,
             Status = OrderStatus.Draft,
-            Total = Money.Zero(DefaultCurrency),
-            Discount = Money.Zero(DefaultCurrency)
+            Total = zero,
+            Discount = zero
         };
 
         return order;
@@ -176,8 +186,9 @@ public class Order : AggregateRoot
 
     public Order PlaceOrder(DateTimeOffset now)
     {
-        // Two different rules, two different messages: "empty order" and "wrong status" are
-        // different business failures and the API caller needs to know which one to fix.
+        // Three separate rules, three separate messages: "empty order", "no document number" and
+        // "wrong status" are different business failures, and the API caller needs to know which one
+        // to fix. A single combined condition is what made the old version un-debuggable.
         Guard.AgainstInvalidState(_lines.Count > 0,
             () => new DomainException("An order needs at least one line before it can be placed."));
         Guard.AgainstNull(Number, () => new DomainException("An order needs a document number before it can be placed."));
@@ -185,7 +196,10 @@ public class Order : AggregateRoot
 
         Status = OrderStatus.Placed;
         PlacedAt = now;
-        Raise(new OrderPlaced(Id, Number, Total, _lines.Count, now));
+        
+        // CustomerId is in the payload so the notification handler never has to reload this aggregate:
+        // "who to tell" is part of the fact, not something subscribers reconstruct with a query.
+        Raise(new OrderPlaced(Id, CustomerId, Number, Total, _lines.Count, now));
 
         return this;
     }
@@ -202,8 +216,11 @@ public class Order : AggregateRoot
 
     public Order ShipOrder(DateTimeOffset now)
     {
-        // the application service calls StockAvailabilityService.DeductStock -> SaveChangeAsync -> ShipOrder.
-        // the boundary is why this isn't enforced here.
+        // Stock is NOT verified here, and cannot be: that would mean reaching into the Product
+        // aggregate, which is exactly what the consistency boundary forbids. The application service
+        // calls StockAvailabilityService.DeductStock BEFORE this method, and both aggregates are then
+        // committed in ONE unit of work — "deduct before ship" is the order of the domain calls, not a
+        // request for two transactions (a second commit could leave stock gone and the order Confirmed).
         EnsureCanMoveTo(OrderStatus.Shipped);
 
         Status = OrderStatus.Shipped;
@@ -258,10 +275,14 @@ public class Order : AggregateRoot
     private void EnsureCanMoveTo(OrderStatus target) =>
         Guard.AgainstInvalidState(CanMove(Status, target), () => new InvalidOrderStateException(Status, target));
 
-    // Lines are only mutable while the order is ours to edit; after Placed the customer agreed to it.
+    // Lines and discount are only mutable while the order is a Draft; after Placed the customer has
+    // agreed to the document. A dedicated message: InvalidOrderStateException(Status, Status) used to
+    // produce "an order cannot move from 'Placed' to 'Placed'", which describes no transition at all
+    // — editing is not a state change, so it should not pretend to be one in the error either.
     private void EnsureEditable() =>
         Guard.AgainstInvalidState(Status is OrderStatus.Draft,
-            () => new InvalidOrderStateException(Status, Status));
+            () => new DomainException(
+                $"This order is '{Status}': lines and discount can only change while it is a Draft."));
 
     private OrderLine FindLine(Guid lineId)
     {
