@@ -6,6 +6,8 @@ using Samian.Application.Features.Auth;
 using Samian.Application.Features.Customers;
 using Samian.Application.Features.Orders;
 using Samian.Application.Features.Products;
+using Samian.Application.Features.Reservations;
+using Samian.Application.Features.Sales;
 using Samian.Application.Validation;
 using Samian.Domain.Contracts;
 using Samian.Domain.Events;
@@ -32,7 +34,11 @@ public static class DependencyInjection
         services.AddScoped<ICustomerService, CustomerService>();
         services.AddScoped<IProductService, ProductService>();
         services.AddScoped<IOrderService, OrderService>();
+        services.AddScoped<ISaleService, SaleService>();
+        services.AddScoped<IReservationService, ReservationService>();
 
+        // PLACEHOLDER only: we will replace this with the WebApi header-reading adapter.
+        services.AddScoped<ITenantProvider, NullTenantProvider>();
         // ---------------- Validators (one strategy per request type) ----------------
         services.AddScoped<IValidator<RegisterRequest>, RegisterRequestValidator>();
         services.AddScoped<IValidator<LoginRequest>, LoginRequestValidator>();
@@ -44,6 +50,10 @@ public static class DependencyInjection
         services.AddScoped<IValidator<AddOrderLineRequest>, AddOrderLineRequestValidator>();
         services.AddScoped<IValidator<ChangeOrderLineQuantityRequest>, ChangeOrderLineQuantityRequestValidator>();
         services.AddScoped<IValidator<ApplyDiscountRequest>, ApplyDiscountRequestValidator>();
+        services.AddScoped<IValidator<CreateSaleRequest>, CreateSaleRequestValidator>();
+        services.AddScoped<IValidator<ReserveRequest>, ReserveRequestValidator>();
+
+        // services.AddScoped<IValidator<ReserveRequest>, ReserveRequestValidator>();
 
         // ---------------- Domain services ----------------
         // Singleton, not scoped: both are stateless rules, so the shorter lifetime costs nothing and
@@ -61,17 +71,19 @@ public static class DependencyInjection
     {
         ArgumentNullException.ThrowIfNull(options);
 
-        // THE Strategy pattern, with the switch confined to the composition root: the use case asks for
-        // IPricingPolicy and cannot tell which rule it received. Adding "CampaignDiscountPricingPolicy"
-        // later means one class plus one case here — OrderService and Order do not change.
-        IPricingPolicy policy = options.Strategy switch
+        IPricingPolicy basePolicy = options.Strategy switch
         {
             PricingStrategy.Volume => new VolumeDiscountPricingPolicy(options.DiscountRate, options.ThresholdAmount),
             PricingStrategy.None => new NoDiscountPricingPolicy(),
             _ => throw new InvalidOperationException($"Unknown pricing strategy '{options.Strategy}'.")
         };
 
-        services.AddSingleton(policy);
+        // The campaign rule is ALWAYS in the composite: its answer is zero outside every window, so
+        // registering it unconditionally costs nothing and keeps "does promo beat volume?" a test of
+        // precedence, not of wiring. Composition root stays the only place the switch lives.
+        services.AddSingleton<IPricingPolicy>(new PricingPolicyComposite(basePolicy, new BlackFridayPricingPolicy()));
+
+        // services.AddSingleton(basePolicy);
     }
 
     private static void AddDomainEventHandlers(IServiceCollection services)
