@@ -5,9 +5,11 @@ namespace Samian.Domain.Entities;
 
 // Customer is its own aggregate root (its own repository, its own identity, changed independently
 // of orders). Order only stores CustomerId.
-public class Customer : AggregateRoot
+public class Customer : AggregateRoot, IMultiTenant
 {
     private Customer() { Name = null!; Address = null!; }
+
+    public Guid TenantId { get; private set; }
 
     // The old `public Guid Id { get; set; }` here hid Entity<Guid>.Id (CS0108) and re-opened a public
     // setter on identity — the base property is inherited, not re-declared.
@@ -20,7 +22,7 @@ public class Customer : AggregateRoot
     // a business rule — no invariant depends on it.
     public string? Email { get; private set; }
 
-    public static Customer Create(string name, string address, string? email = null)
+    public static Customer Create(string name, string address, string? email = null, Guid tenantId = default)
     {
         // The factory is the invariant gate: an empty-named customer should never reach the database.
         Guard.AgainstEmpty(name, () => new DomainException("Customer name is required."));
@@ -29,6 +31,7 @@ public class Customer : AggregateRoot
         return new Customer()
         {
             Id = Guid.NewGuid(),
+            TenantId = tenantId,
             Name = name,
             Address = address,
             Email = email

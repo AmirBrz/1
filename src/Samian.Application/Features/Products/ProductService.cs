@@ -87,6 +87,7 @@ public sealed class ProductService : IProductService
     private readonly IProductRepository _products;
     private readonly IUnitOfWork _unitOfWork;
     private readonly ICacheService _cache;
+    private readonly ITenantProvider _tenant;
     private readonly IValidator<CreateProductRequest> _createValidator;
     private readonly IValidator<ChangePriceRequest> _changePriceValidator;
     private readonly IValidator<RestockRequest> _restockValidator;
@@ -97,7 +98,8 @@ public sealed class ProductService : IProductService
         ICacheService cache,
         IValidator<CreateProductRequest> createValidator,
         IValidator<ChangePriceRequest> changePriceValidator,
-        IValidator<RestockRequest> restockValidator)
+        IValidator<RestockRequest> restockValidator,
+        ITenantProvider tenant)
     {
         ArgumentNullException.ThrowIfNull(products);
         ArgumentNullException.ThrowIfNull(unitOfWork);
@@ -109,6 +111,7 @@ public sealed class ProductService : IProductService
         _products = products;
         _unitOfWork = unitOfWork;
         _cache = cache;
+        _tenant = tenant;
         _createValidator = createValidator;
         _changePriceValidator = changePriceValidator;
         _restockValidator = restockValidator;
@@ -141,7 +144,7 @@ public sealed class ProductService : IProductService
         // round-trips JSON: a concrete class deserializes, an interface does not. The await is what
         // converts them — Task<T> is invariant, so Task<List<T>> is not a Task<IReadOnlyList<T>>.
         return await _cache.GetOrSetAsync<List<ProductResponse>>(
-            CacheKeys.ProductList(page, pageSize),
+            CacheKeys.ProductList(_tenant.TenantId, page, pageSize),
             async () =>
             {
                 var products = await _products.GetPagedAsync(page, pageSize, cancellationToken);
@@ -154,7 +157,7 @@ public sealed class ProductService : IProductService
     public Task<ProductResponse> GetAsync(Guid id, CancellationToken cancellationToken = default)
     {
         return _cache.GetOrSetAsync<ProductResponse>(
-            CacheKeys.Product(id),
+            CacheKeys.Product(_tenant.TenantId, id),
             async () =>
             {
                 var product = await _products.GetByIdAsync(id, cancellationToken);
@@ -206,12 +209,12 @@ public sealed class ProductService : IProductService
 
     private async Task InvalidateAsync(Guid productId, CancellationToken cancellationToken)
     {
-        await _cache.RemoveAsync(CacheKeys.Product(productId), cancellationToken);
+        await _cache.RemoveAsync(CacheKeys.Product(_tenant.TenantId, productId), cancellationToken);
 
         // Best-effort but explicit: page 0..9 is enough for a sample ERP catalogue. Leaving the list
         // keys alive is the classic "price changed but the shop still shows the old price" bug.
         for (var page = 0; page < 10; page++)
-            await _cache.RemoveAsync(CacheKeys.ProductList(page, 20), cancellationToken);
+            await _cache.RemoveAsync(CacheKeys.ProductList(_tenant.TenantId, page, 20), cancellationToken);
     }
 
     private static ProductResponse ToResponse(Product product) =>

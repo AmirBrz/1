@@ -7,9 +7,11 @@ namespace Samian.Domain.Entities;
 // Product is its OWN aggregate root (it has its own identity, its own stock invariant, and its own
 // repository), not a member of the Order aggregate. OrderLine therefore keeps ProductId + a price
 // snapshot instead of a live Product reference: two aggregates are only ever joined by identity.
-public class Product : AggregateRoot
+public class Product : AggregateRoot, IMultiTenant
 {
     private Product() { }
+
+    public Guid TenantId { get; private set; }
 
     public string Name { get; private set; } = null!;
 
@@ -21,7 +23,9 @@ public class Product : AggregateRoot
 
     // Was `private static`: nothing outside the class could ever create a Product — not the API,
     // not a test, not the seed data. A factory that cannot be called is not a factory.
-    public static Product Create(string name, Money price, int stockQuantity = 0)
+    // we will replace `Guid.Empty` defaults with the real ITenantProvider value at each call site.
+    // it's empty and optional for seed and success compilation.
+    public static Product Create(string name, Money price, int stockQuantity = 0, Guid tenantId = default)
     {
         Guard.AgainstEmpty(name, () => new DomainException("Product name is required."));
         Guard.AgainstNegative(stockQuantity, () => new DomainException("Stock cannot be negative."));
@@ -29,6 +33,7 @@ public class Product : AggregateRoot
         return new Product
         {
             Id = Guid.NewGuid(),
+            TenantId = tenantId,
             Name = name,
             Price = price,
             StockQuantity = stockQuantity

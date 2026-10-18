@@ -143,6 +143,7 @@ public sealed class OrderService : IOrderService
     private readonly IValidator<AddOrderLineRequest> _addLineValidator;
     private readonly IValidator<ChangeOrderLineQuantityRequest> _changeQuantityValidator;
     private readonly IValidator<ApplyDiscountRequest> _discountValidator;
+    private readonly ITenantProvider _tenant;
 
     // Eleven collaborators is a lot, and it is the honest number for a use-case orchestrator. When a
     // service starts needing this much, the fix in a real system is to split by use case (PlaceOrder,
@@ -159,7 +160,8 @@ public sealed class OrderService : IOrderService
         IValidator<CreateOrderRequest> createValidator,
         IValidator<AddOrderLineRequest> addLineValidator,
         IValidator<ChangeOrderLineQuantityRequest> changeQuantityValidator,
-        IValidator<ApplyDiscountRequest> discountValidator)
+        IValidator<ApplyDiscountRequest> discountValidator,
+        ITenantProvider tenant)
     {
         ArgumentNullException.ThrowIfNull(orders);
         ArgumentNullException.ThrowIfNull(products);
@@ -169,6 +171,7 @@ public sealed class OrderService : IOrderService
         ArgumentNullException.ThrowIfNull(stock);
         ArgumentNullException.ThrowIfNull(pricing);
         ArgumentNullException.ThrowIfNull(cache);
+        ArgumentNullException.ThrowIfNull(tenant);
         ArgumentNullException.ThrowIfNull(createValidator);
         ArgumentNullException.ThrowIfNull(addLineValidator);
         ArgumentNullException.ThrowIfNull(changeQuantityValidator);
@@ -182,6 +185,7 @@ public sealed class OrderService : IOrderService
         _stock = stock;
         _pricing = pricing;
         _cache = cache;
+        _tenant = tenant;
         _createValidator = createValidator;
         _addLineValidator = addLineValidator;
         _changeQuantityValidator = changeQuantityValidator;
@@ -209,6 +213,11 @@ public sealed class OrderService : IOrderService
 
     public async Task<OrderResponse> AddLineAsync(Guid orderId, AddOrderLineRequest request, CancellationToken cancellationToken = default)
     {
+        var tenantId = _tenant.HasTenant && _tenant.TenantId != Guid.Empty
+     ? _tenant.TenantId
+     : throw new AppValidationException("A tenant context is required to reserve (X-Tenant-Id).");
+
+
         _addLineValidator.EnsureValid(request);
 
         var order = await RequireOrderAsync(orderId, cancellationToken);
@@ -224,7 +233,7 @@ public sealed class OrderService : IOrderService
         order.AddLine(product.Id, product.Price, request.Quantity);
 
         await _unitOfWork.SaveChangesAsync(cancellationToken);
-        await _cache.RemoveAsync(CacheKeys.Order(order.Id), cancellationToken);
+        await _cache.RemoveAsync(CacheKeys.Order(_tenant.TenantId, order.Id), cancellationToken);
 
         return ToResponse(order);
     }
@@ -238,7 +247,7 @@ public sealed class OrderService : IOrderService
         order.ChangeLineQuantity(lineId, request.Quantity);
 
         await _unitOfWork.SaveChangesAsync(cancellationToken);
-        await _cache.RemoveAsync(CacheKeys.Order(order.Id), cancellationToken);
+        await _cache.RemoveAsync(CacheKeys.Order(_tenant.TenantId, order.Id), cancellationToken);
 
         return ToResponse(order);
     }
@@ -250,7 +259,7 @@ public sealed class OrderService : IOrderService
         order.RemoveLine(lineId);
 
         await _unitOfWork.SaveChangesAsync(cancellationToken);
-        await _cache.RemoveAsync(CacheKeys.Order(order.Id), cancellationToken);
+        await _cache.RemoveAsync(CacheKeys.Order(_tenant.TenantId, order.Id), cancellationToken);
 
         return ToResponse(order);
     }
@@ -266,7 +275,7 @@ public sealed class OrderService : IOrderService
         order.ApplyDiscount(new Money(request.Amount, order.Currency), _clock.UtcNow);
 
         await _unitOfWork.SaveChangesAsync(cancellationToken);
-        await _cache.RemoveAsync(CacheKeys.Order(order.Id), cancellationToken);
+        await _cache.RemoveAsync(CacheKeys.Order(_tenant.TenantId ,order.Id), cancellationToken);
 
         return ToResponse(order);
     }
@@ -278,7 +287,7 @@ public sealed class OrderService : IOrderService
         // STRATEGY in action: the rule (volume discount? none?) was chosen once at composition root.
         // This method does not know which policy it is asking, and the policy does not know an Order
         // exists — it receives subtotal + lines and returns a suggestion.
-        var suggestion = _pricing.CalculateDiscount(order);
+        var suggestion = _pricing.CalculateDiscount(order, _clock.UtcNow);
 
         if (suggestion.IsFailure)
             throw new AppValidationException(suggestion.Error!);
@@ -290,7 +299,7 @@ public sealed class OrderService : IOrderService
         order.ApplyDiscount(discount, _clock.UtcNow);
 
         await _unitOfWork.SaveChangesAsync(cancellationToken);
-        await _cache.RemoveAsync(CacheKeys.Order(order.Id), cancellationToken);
+        await _cache.RemoveAsync(CacheKeys.Order(_tenant.TenantId, order.Id), cancellationToken);
 
         return ToResponse(order);
     }
@@ -317,7 +326,7 @@ public sealed class OrderService : IOrderService
         order.PlaceOrder(_clock.UtcNow);
 
         await _unitOfWork.SaveChangesAsync(cancellationToken);
-        await _cache.RemoveAsync(CacheKeys.Order(order.Id), cancellationToken);
+        await _cache.RemoveAsync(CacheKeys.Order(_tenant.TenantId,order.Id), cancellationToken);
 
         return ToResponse(order);
     }
@@ -329,7 +338,7 @@ public sealed class OrderService : IOrderService
         order.ConfirmOrder(_clock.UtcNow);
 
         await _unitOfWork.SaveChangesAsync(cancellationToken);
-        await _cache.RemoveAsync(CacheKeys.Order(order.Id), cancellationToken);
+        await _cache.RemoveAsync(CacheKeys.Order(_tenant.TenantId, order.Id), cancellationToken);
 
         return ToResponse(order);
     }
@@ -358,7 +367,7 @@ public sealed class OrderService : IOrderService
         // invalidated by OrderCacheInvalidationHandler (a domain event), which is the pattern for
         // cross-cutting consequences of a write.
         foreach (var product in products)
-            await _cache.RemoveAsync(CacheKeys.Product(product.Id), cancellationToken);
+            await _cache.RemoveAsync(CacheKeys.Product(_tenant.TenantId,product.Id), cancellationToken);
 
         return ToResponse(order);
     }
@@ -370,7 +379,7 @@ public sealed class OrderService : IOrderService
         order.DeliverOrder(_clock.UtcNow);
 
         await _unitOfWork.SaveChangesAsync(cancellationToken);
-        await _cache.RemoveAsync(CacheKeys.Order(order.Id), cancellationToken);
+        await _cache.RemoveAsync(CacheKeys.Order(_tenant.TenantId, order.Id), cancellationToken);
 
         return ToResponse(order);
     }
@@ -386,7 +395,7 @@ public sealed class OrderService : IOrderService
         order.CancelOrder(_clock.UtcNow, request.Reason);
 
         await _unitOfWork.SaveChangesAsync(cancellationToken);
-        await _cache.RemoveAsync(CacheKeys.Order(order.Id), cancellationToken);
+        await _cache.RemoveAsync(CacheKeys.Order(_tenant.TenantId,order.Id), cancellationToken);
 
         return ToResponse(order);
     }
@@ -394,7 +403,7 @@ public sealed class OrderService : IOrderService
     public Task<OrderResponse> GetAsync(Guid orderId, CancellationToken cancellationToken = default)
     {
         return _cache.GetOrSetAsync(
-            CacheKeys.Order(orderId),
+            CacheKeys.Order(_tenant.TenantId,orderId),
             async () =>
             {
                 var order = await _orders.GetByIdAsync(orderId, cancellationToken);
@@ -412,7 +421,7 @@ public sealed class OrderService : IOrderService
         // Awaited rather than returned: Task<T> is invariant, so the cached List<OrderResponse> has to
         // be unwrapped before it can be handed out as an IReadOnlyList.
         return await _cache.GetOrSetAsync<List<OrderResponse>>(
-            CacheKeys.CustomerOrders(customerId),
+            CacheKeys.CustomerOrders(_tenant.TenantId,customerId),
             async () =>
             {
                 var orders = await _orders.GetForCustomerAsync(customerId, cancellationToken);

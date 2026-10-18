@@ -28,7 +28,12 @@ public class OrderLine : Entity<Guid>
     // Derived, never stored or assigned: quantity × the snapshot price.
     public Money LineTotal => UnitPrice * Quantity;
 
-    public static OrderLine Create(Guid orderId, Guid productId, Money unitPrice, int quantity)
+    // WHY the promotion is NOT Order.Discount: Discount is per-order and applying it REPLACES the
+    // previous one — a campaign applied that way would discount items that are not in the sale and
+    // lose the price of record an invoice must show. An offer price is a PRICE, so it goes into the
+    // UnitPrice snapshot; this id is the proof of WHICH sale justified it.
+    public Guid? SaleEventId { get; private set; }
+    public static OrderLine Create(Guid orderId, Guid productId, Money unitPrice, int quantity, Guid? saleEventId = null)
     {
         // Business counts are never zero: quantity 0 is not "an order line of nothing", it is a bug.
         Guard.AgainstNonPositive(quantity, () => new DomainException("Order line quantity must be at least 1."));
@@ -39,7 +44,8 @@ public class OrderLine : Entity<Guid>
             OrderId = orderId,
             ProductId = productId,
             UnitPrice = unitPrice,
-            Quantity = quantity
+            Quantity = quantity,
+            SaleEventId = saleEventId
         };
     }
 

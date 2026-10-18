@@ -8,7 +8,7 @@ namespace Samian.Domain.Entities;
 
 // Order is the aggregate root: it owns the OrderLine children, it is the only way to change them,
 // and it is the only thing a repository loads or saves.
-public class Order : AggregateRoot
+public class Order : AggregateRoot, IMultiTenant
 {
     // EF Core materializes entities by reflection, so it needs a parameterless constructor. Private,
     // so no caller can create an Order that skips Create() and its invariant checks.
@@ -21,6 +21,8 @@ public class Order : AggregateRoot
         // then throw on every materialized order in a multi-currency future.
         Discount = Money.Zero(Currency);
     }
+
+    public Guid TenantId { get; private set; }
 
     // Decision recorded: ONE currency per order, chosen at creation — an ERP document is quoted,
     // placed and invoiced in a single currency. IRR is only the DEFAULT, not the only legal value,
@@ -73,7 +75,7 @@ public class Order : AggregateRoot
 
     // A Draft order is never valid in a half-built state, so callers don't `new Order()` and assign
     // properties one at a time: the factory enforces the invariant at the moment of creation.
-    public static Order Create(Guid customerId, string currency = DefaultCurrency)
+    public static Order Create(Guid customerId, string currency = DefaultCurrency, Guid tenantId = default)
     {
         Guard.AgainstInvalidState(customerId != Guid.Empty,
             () => new DomainException("A customer is required to create an order."));
@@ -89,6 +91,7 @@ public class Order : AggregateRoot
             // Server generates keys for Guid columns; SQLite/MySQL cannot, and "the database will fill
             // it in" would fail at the first insert. A Guid aggregate id is a domain fact, not a row id.
             Id = Guid.NewGuid(),
+            TenantId = tenantId,
             CustomerId = customerId,
             Currency = zero.Currency,
             Status = OrderStatus.Draft,
@@ -118,7 +121,7 @@ public class Order : AggregateRoot
         return this;
     }
 
-    public Order AddLine(Guid productId, Money unitPrice, int quantity)
+    public Order AddLine(Guid productId, Money unitPrice, int quantity, Guid? saleEventId = null)
     {
         Guard.AgainstInvalidState(productId != Guid.Empty, () => new DomainException("Product is required."));
         EnsureEditable();
@@ -130,7 +133,9 @@ public class Order : AggregateRoot
         if (existing is not null)
             return ChangeLineQuantity(existing.Id, existing.Quantity + quantity);
 
-        var line = OrderLine.Create(Id, productId, unitPrice, quantity);
+        //var line = OrderLine.Create(Id, productId, unitPrice, quantity);
+        var line = OrderLine.Create(Id, productId, unitPrice, quantity, saleEventId);
+
         _lines.Add(line);
         RecalculateTotal();
 
@@ -196,7 +201,7 @@ public class Order : AggregateRoot
 
         Status = OrderStatus.Placed;
         PlacedAt = now;
-        
+
         // CustomerId is in the payload so the notification handler never has to reload this aggregate:
         // "who to tell" is part of the fact, not something subscribers reconstruct with a query.
         Raise(new OrderPlaced(Id, CustomerId, Number, Total, _lines.Count, now));
