@@ -34,7 +34,9 @@ public static class DatabaseInitializer
         var hasher = scope.ServiceProvider.GetRequiredService<IPasswordHasher>();
         var logger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger(nameof(DatabaseInitializer));
 
-        await db.Database.EnsureCreatedAsync(cancellationToken);
+        // await db.Database.EnsureCreatedAsync(cancellationToken);
+        await db.Database.MigrateAsync(cancellationToken);
+
 
         var inserted = 0;
 

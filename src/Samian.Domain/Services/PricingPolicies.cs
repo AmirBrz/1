@@ -16,8 +16,8 @@ namespace Samian.Domain.Services;
 // The safe default: used for guests, and the stub to inject in tests that don't care about pricing.
 public sealed class NoDiscountPricingPolicy : IPricingPolicy
 {
-    public Money DiscountFor(Money subtotal, IReadOnlyCollection<OrderLine> lines)
-        => Money.Zero(subtotal.Currency);
+    public Money DiscountFor(PricingContext context)
+        => Money.Zero(context.Subtotal.Currency);
 }
 
 // "X % once the order reaches Y" — the most common ERP pricing rule, and parameterized rather than
@@ -40,13 +40,68 @@ public sealed class VolumeDiscountPricingPolicy : IPricingPolicy
         _thresholdAmount = thresholdAmount;
     }
 
-    public Money DiscountFor(Money subtotal, IReadOnlyCollection<OrderLine> lines)
+    public Money DiscountFor(PricingContext context)
     {
         // The threshold is built in the SUBTOTAL's currency instead of being stored as one currency:
         // the policy stays currency-agnostic and no conversion is invented here.
-        if (subtotal < new Money(_thresholdAmount, subtotal.Currency))
-            return Money.Zero(subtotal.Currency);
+        if (context.Subtotal < new Money(_thresholdAmount, context.Subtotal.Currency))
+            return Money.Zero(context.Subtotal.Currency);
 
-        return subtotal * _rate;
+        return context.Subtotal * _rate;
+    }
+}
+
+// The Black Friday rule: a rate off the LIST price of the promoted product's lines, but ONLY while
+// the window is open — 8:59:59 and 9:30:00 both answer zero. The window lives in the context because
+// the policy must stay clockless and data-only (the port's contract).
+public sealed class BlackFridayPricingPolicy : IPricingPolicy
+{
+    public Money DiscountFor(PricingContext context)
+    {
+        var offer = context.Offer;
+        if (offer is null)
+            return Money.Zero(context.Subtotal.Currency);
+
+        // Same half-open window as SaleEvent.IsOn: [start, end). One rule, one shape, everywhere.
+        if (context.Now < offer.StartsAt || context.Now >= offer.EndsAt)
+            return Money.Zero(context.Subtotal.Currency);
+
+        var promoted = context.Lines
+            .Where(l => l.ProductId == offer.ProductId)
+            .Select(l => l.LineTotal)
+            .DefaultIfEmpty(Money.Zero(context.Subtotal.Currency))
+            .Aggregate((left, right) => left + right);
+
+        return promoted * offer.DiscountRate;
+    }
+}
+
+// Precedence rule for the whole pricing area: policies do NOT stack — the composite asks every
+// rule and keeps the LARGEST single discount. Why not "sum them": two overlapping campaigns
+// silently combining into a 45 % off is the kind of number nobody in marketing approved; "largest
+// wins" is one line to test and one sentence to defend in the README (assumption #4).
+// Every policy must answer in the SUBTOTAL's currency (they all build Money.Zero from it) — that
+// is what makes the > comparison here safe.
+public sealed class PricingPolicyComposite : IPricingPolicy
+{
+    private readonly IReadOnlyList<IPricingPolicy> _policies;
+
+    public PricingPolicyComposite(params IPricingPolicy[] policies)
+    {
+        Guard.AgainstInvalidState(policies is { Length: > 0 },
+            () => new DomainException("A pricing composite needs at least one policy."));
+        _policies = policies;
+    }
+
+    public Money DiscountFor(PricingContext context)
+    {
+        Money? best = null;
+        foreach (var policy in _policies)
+        {
+            var candidate = policy.DiscountFor(context);
+            if (best is null || candidate > best)
+                best = candidate;
+        }
+        return best ?? Money.Zero(context.Subtotal.Currency);
     }
 }

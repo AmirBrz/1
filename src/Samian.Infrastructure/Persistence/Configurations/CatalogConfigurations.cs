@@ -22,10 +22,12 @@ public sealed class ProductConfiguration : IEntityTypeConfiguration<Product>
 
         builder.Property(p => p.StockQuantity).IsRequired();
 
+        builder.Property(p => p.TenantId).IsRequired();
+
         // The catalogue is browsed by name in every ERP screen, and a case-insensitive collation would
-        // make a WHERE Name = 'x' scan; SQLite's LIKE is case-insensitive for ASCII anyway, so the
-        // index is what matters here.
-        builder.HasIndex(p => p.Name);
+        // Every catalogue query is tenant-scoped first, so the composite index leads with TenantId;
+        // this is also the index the global filter (Step 16) will seek on.
+        builder.HasIndex(p => new { p.TenantId, p.Name });
 
         builder.Ignore(nameof(AggregateRoot.DomainEvents));
     }
@@ -43,6 +45,9 @@ public sealed class CustomerConfiguration : IEntityTypeConfiguration<Customer>
         builder.Property(c => c.Name).HasMaxLength(100).IsRequired();
         builder.Property(c => c.Address).HasMaxLength(300).IsRequired();
         builder.Property(c => c.Email).HasMaxLength(200).IsRequired(false);
+
+        builder.Property(c => c.TenantId).IsRequired();
+        builder.HasIndex(c => c.TenantId);
 
         builder.Ignore(nameof(AggregateRoot.DomainEvents));
     }

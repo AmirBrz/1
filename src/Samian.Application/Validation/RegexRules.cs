@@ -47,4 +47,8 @@ public static partial class RegexRules
     // interview answer when somebody asks why not the full RFC 5322 pattern.
     [GeneratedRegex(@"^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$")]
     public static partial Regex Email();
+
+    // SKUs are machine identifiers, not prose: no spaces, no punctuation beyond '-'.
+    [GeneratedRegex(@"^[A-Za-z0-9][A-Za-z0-9-]{0,39}$")]
+    public static partial Regex Sku();
 }

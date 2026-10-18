@@ -38,7 +38,9 @@ public static class DependencyInjection
         var connectionString = configuration.GetConnectionString("SamianDatabase")
                                ?? throw new InvalidOperationException("ConnectionStrings:SamianDatabase is not configured.");
 
-        services.AddDbContext<SamianDbContext>(options => options.UseSqlite(connectionString));
+        // SQL Server per the brief; TrustServerCertificate because the container's cert is self-signed —
+        // this is a DEV-only affordance of a local compose network, and the README says so.
+        services.AddDbContext<SamianDbContext>(options => options.UseSqlServer(connectionString));
 
         // Scoped: one DbContext per request, shared by the repositories AND the unit of work, which is
         // what makes "stage in a repository, commit in the unit of work" a single transaction.
@@ -46,6 +48,7 @@ public static class DependencyInjection
         services.AddScoped<IProductRepository, ProductRepository>();
         services.AddScoped<ICustomerRepository, CustomerRepository>();
         services.AddScoped<IUserRepository, UserRepository>();
+        services.AddScoped<ISaleEventRepository, SaleEventRepository>();
         services.AddScoped<IUnitOfWork, UnitOfWork>();
 
         // The counter needs the scoped DbContext (it participates in the same connection).

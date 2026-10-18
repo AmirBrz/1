@@ -56,4 +56,14 @@ public sealed class UnitOfWork : IUnitOfWork
 
         return written;
     }
+
+    // A rollback path is deliberately NOT on the port: the transaction is finalized by SaveChanges+Commit;
+    // if anything throws in between, the scoped DbContext is disposed with the request and the open
+    // transaction is aborted by the connection — the same guarantee the implicit SaveChanges transaction
+    // already gave, just now spanning the ExecuteUpdate as well.
+    public Task BeginTransactionAsync(CancellationToken ct = default)
+        => _db.Database.BeginTransactionAsync(ct);
+
+    public Task CommitTransactionAsync(CancellationToken ct = default)
+        => _db.Database.CommitTransactionAsync(ct);
 }

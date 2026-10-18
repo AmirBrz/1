@@ -50,6 +50,7 @@ public sealed class OrderConfiguration : IEntityTypeConfiguration<Order>
         builder.Property(o => o.Discount)
             .HasConversion(SamianValueConverters.MoneyToString, SamianValueConverters.MoneyComparer);
 
+
         // THE POINT OF THE AGGREGATE'S ENCAPSULATION MEETS EF: a read-only collection property with a
         // private backing list is exactly what EF's "field-only persistence" mode was designed for.
         // Without Field access mode EF would look for a settable collection and, failing that, would
@@ -96,6 +97,10 @@ public sealed class OrderLineConfiguration : IEntityTypeConfiguration<OrderLine>
         builder.Property(l => l.ProductId).IsRequired();
         builder.Property(l => l.Quantity).IsRequired();
 
+        // The campaign proof column: nullable (normal lines have none), no FK — SaleEvent is a
+        // different aggregate and aggregates never gain navigations between them.
+        builder.Property(l => l.SaleEventId).IsRequired(false);
+        
         builder.Ignore(l => l.LineTotal);
         builder.Ignore(nameof(AggregateRoot.DomainEvents));
 

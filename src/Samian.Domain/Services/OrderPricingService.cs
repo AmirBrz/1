@@ -25,7 +25,7 @@ public sealed class OrderPricingService
         _policy = policy;
     }
 
-    public Result<Money> CalculateDiscount(Order order)
+    public Result<Money> CalculateDiscount(Order order, DateTimeOffset now, SaleOffer? offer = null)
     {
         Guard.AgainstNull(order, () => new ArgumentNullException(nameof(order)));
 
@@ -41,7 +41,14 @@ public sealed class OrderPricingService
                 $"Order mixes '{firstCurrency}' with '{mismatched.UnitPrice.Currency}' " +
                 $"on product {mismatched.ProductId}; an order must be priced in one currency.");
 
-        var discount = _policy.DiscountFor(order.Subtotal, order.Lines.ToList());
+
+        // var context = new PricingContext(order.Subtotal, order.Lines.ToList(), now, order.TenantId);
+        // var discount = _policy.DiscountFor(context);
+
+
+        var context = new PricingContext(order.Subtotal, order.Lines.ToList(), now, order.TenantId, offer);
+        var discount = _policy.DiscountFor(context);
+
 
         // A policy is a plug-in rule; a buggy rule returning more than the order is worth is caught
         // HERE, at the boundary, instead of corrupting Total. (It cannot return a negative amount:

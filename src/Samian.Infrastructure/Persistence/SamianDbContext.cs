@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Samian.Application.Contracts;
 using Samian.Domain.Entities;
 using Samian.Infrastructure.Persistence.Entities;
 
@@ -12,8 +13,12 @@ namespace Samian.Infrastructure.Persistence;
 // requests then share a change tracker and overwrite each other.
 public sealed class SamianDbContext : DbContext
 {
-    public SamianDbContext(DbContextOptions<SamianDbContext> options) : base(options)
+
+    private readonly Guid? _tenantId;
+
+    public SamianDbContext(DbContextOptions<SamianDbContext> options, ITenantProvider tenant = null) : base(options)
     {
+        _tenantId = tenant is { HasTenant: true } && tenant.TenantId != Guid.Empty ? tenant.TenantId : null;
     }
 
     // => Set<T>() instead of DbSet<T> Properties: same thing, less typing, and no reflection surprises.
@@ -27,8 +32,8 @@ public sealed class SamianDbContext : DbContext
 
     public DbSet<User> Users => Set<User>();
 
-    // Not a domain type, and deliberately so: a gap-free document-number counter is storage machinery.
-    // Putting it in the Domain would invent an aggregate for something that is not a business concept.
+    public DbSet<SaleEvent> SaleEvents => Set<SaleEvent>();
+    public DbSet<Reservation> Reservations => Set<Reservation>();
     public DbSet<DocumentSequenceRow> DocumentSequences => Set<DocumentSequenceRow>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -39,5 +44,15 @@ public sealed class SamianDbContext : DbContext
         // adding a configuration CLASS, not editing this method (open/closed, applied to mapping), and it
         // keeps the fluent definitions out of a 400-line OnModelCreating.
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(SamianDbContext).Assembly);
+   
+        // one global filter per tenant-bearing entity. `_tenantId == null` short-circuit
+        // exists ONLY so design-time model building works; at runtime it is always a real id, and
+        // when it is, every query (including ExecuteUpdateAsync's WHERE) gains AND TenantId = @p.
+        modelBuilder.Entity<Order>().HasQueryFilter(e => _tenantId == null || e.TenantId == _tenantId);
+        modelBuilder.Entity<Product>().HasQueryFilter(e => _tenantId == null || e.TenantId == _tenantId);
+        modelBuilder.Entity<Customer>().HasQueryFilter(e => _tenantId == null || e.TenantId == _tenantId);
+        modelBuilder.Entity<SaleEvent>().HasQueryFilter(e => _tenantId == null || e.TenantId == _tenantId);
+        modelBuilder.Entity<Reservation>().HasQueryFilter(e => _tenantId == null || e.TenantId == _tenantId);
+   
     }
 }

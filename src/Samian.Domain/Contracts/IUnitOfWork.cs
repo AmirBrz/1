@@ -9,4 +9,12 @@ namespace Samian.Domain.Contracts;
 public interface IUnitOfWork
 {
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
-}
+
+
+// The reservation use case needs statements BEYOND tracked entities to share one commit:
+    // the atomic ExecuteUpdate (SaleEventRepository) runs on the connection directly, and the
+    // outbox row (Step 17) must land in the SAME transaction — "a job must never disappear"
+    // (brief line 21) is only true if decrement+reservation+job commit together or not at all.
+    // Two methods, no IDbContextTransaction leaking into Application: the port stays a port.
+    Task BeginTransactionAsync(CancellationToken cancellationToken = default);
+    Task CommitTransactionAsync(CancellationToken cancellationToken = default);}
