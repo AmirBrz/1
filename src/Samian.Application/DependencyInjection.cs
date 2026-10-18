@@ -37,8 +37,6 @@ public static class DependencyInjection
         services.AddScoped<ISaleService, SaleService>();
         services.AddScoped<IReservationService, ReservationService>();
 
-        // PLACEHOLDER only: we will replace this with the WebApi header-reading adapter.
-        services.AddScoped<ITenantProvider, NullTenantProvider>();
         // ---------------- Validators (one strategy per request type) ----------------
         services.AddScoped<IValidator<RegisterRequest>, RegisterRequestValidator>();
         services.AddScoped<IValidator<LoginRequest>, LoginRequestValidator>();

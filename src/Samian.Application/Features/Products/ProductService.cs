@@ -7,7 +7,7 @@ using Samian.Domain.ValueObjects;
 
 namespace Samian.Application.Features.Products;
 
-public sealed record CreateProductRequest(string Name, decimal PriceAmount, string Currency, int StockQuantity = 0);
+public sealed record CreateProductRequest(string Name, decimal PriceAmount, string Currency, int StockQuantity = 0, string? Sku = null);
 
 public sealed record ChangePriceRequest(decimal Amount, string Currency);
 
@@ -19,6 +19,7 @@ public sealed record RestockRequest(int Quantity);
 public sealed record ProductResponse(
     Guid Id,
     string Name,
+    string Sku,
     decimal PriceAmount,
     string Currency,
     int StockQuantity);
@@ -48,6 +49,8 @@ public sealed class CreateProductRequestValidator : IValidator<CreateProductRequ
             "Currency must be three uppercase letters, for example IRR or USD.");
         messages.AddIf(target.PriceAmount < 0, "Price cannot be negative.");
         messages.AddIf(target.StockQuantity < 0, "Opening stock cannot be negative.");
+        messages.AddIf(target.Sku is not null && (target.Sku.Length == 0 || target.Sku.Length > 40),
+            "SKU, when supplied, must be 1-40 characters.");
 
         return messages.ToList();
     }
@@ -121,9 +124,14 @@ public sealed class ProductService : IProductService
     {
         _createValidator.EnsureValid(request);
 
+        // The catalogue belongs to the signed-in tenant: without this the product would be persisted
+        // with TenantId = Guid.Empty and the global filter would hide it from every real-tenant read.
+        if (!_tenant.HasTenant || _tenant.TenantId == Guid.Empty)
+            throw new AppValidationException("A tenant context is required to create a product (sign in to a tenant, or send X-Tenant-Id).");
+
         // The application service never assigns Name/Price/Stock itself: Product.Create enforces its own
         // invariant, so a half-built product cannot reach the database even if a caller skips validation.
-        var product = Product.Create(request.Name, new Money(request.PriceAmount, request.Currency), request.StockQuantity);
+        var product = Product.Create(request.Name, new Money(request.PriceAmount, request.Currency), request.StockQuantity, _tenant.TenantId, request.Sku);
 
         await _products.AddAsync(product, cancellationToken);
         await _unitOfWork.SaveChangesAsync(cancellationToken);
@@ -218,5 +226,5 @@ public sealed class ProductService : IProductService
     }
 
     private static ProductResponse ToResponse(Product product) =>
-        new(product.Id, product.Name, product.Price.Amount, product.Price.Currency, product.StockQuantity);
+        new(product.Id, product.Name, product.Sku, product.Price.Amount, product.Price.Currency, product.StockQuantity);
 }

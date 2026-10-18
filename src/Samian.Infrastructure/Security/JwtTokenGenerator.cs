@@ -14,6 +14,10 @@ namespace Samian.Infrastructure.Security;
 // because it is the question that follows "why HMAC?".
 public sealed class JwtTokenGenerator : IJwtTokenGenerator
 {
+    // The claim that carries the signed-in user's tenant. One const both the issuer here and the
+    // host's TenantMiddleware read, so the string that names the tenant is defined exactly once.
+    public const string TenantClaimType = "tenant_id";
+
     private readonly JwtOptions _options;
     private readonly SymmetricSecurityKey _signingKey;
 
@@ -33,7 +37,7 @@ public sealed class JwtTokenGenerator : IJwtTokenGenerator
         _signingKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_options.SecretKey));
     }
 
-    public string GenerateToken(Guid userId, string userName, string role, DateTimeOffset expiresAtUtc)
+    public string GenerateToken(Guid userId, string userName, string role, Guid tenantId, DateTimeOffset expiresAtUtc)
     {
         var claims = new List<Claim>
         {
@@ -44,6 +48,10 @@ public sealed class JwtTokenGenerator : IJwtTokenGenerator
             new(ClaimTypes.NameIdentifier, userId.ToString()),
             new(ClaimTypes.Name, userName),
             new(ClaimTypes.Role, role),
+            // The tenant is part of the credential, not a header the client can flip: everything that
+            // scopes a query to one tenant (the global filter, stock availability, reservations) reads
+            // THIS claim, so a signed-in user can only ever act inside their own tenant.
+            new(TenantClaimType, tenantId.ToString()),
         };
 
         var descriptor = new SecurityTokenDescriptor

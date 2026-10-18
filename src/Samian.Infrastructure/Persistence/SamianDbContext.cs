@@ -16,7 +16,9 @@ public sealed class SamianDbContext : DbContext
 
     private readonly Guid? _tenantId;
 
-    public SamianDbContext(DbContextOptions<SamianDbContext> options, ITenantProvider tenant = null) : base(options)
+    // `?` on the parameter: the design-time factory and every non-request scope legitimately have no
+    // tenant source — that is the unfiltered path, not an accident.
+    public SamianDbContext(DbContextOptions<SamianDbContext> options, ITenantProvider? tenant = null) : base(options)
     {
         _tenantId = tenant is { HasTenant: true } && tenant.TenantId != Guid.Empty ? tenant.TenantId : null;
     }
@@ -35,6 +37,14 @@ public sealed class SamianDbContext : DbContext
     public DbSet<SaleEvent> SaleEvents => Set<SaleEvent>();
     public DbSet<Reservation> Reservations => Set<Reservation>();
     public DbSet<DocumentSequenceRow> DocumentSequences => Set<DocumentSequenceRow>();
+
+    // The registry the tenant middleware validates against. Deliberately NOT filtered and NOT
+    // IMultiTenant — it is the thing tenants are named by, not a thing a tenant owns.
+    public DbSet<TenantRow> Tenants => Set<TenantRow>();
+
+    // The transactional outbox (step 17): also storage machinery, also unfiltered — the pipeline
+    // worker processes EVERY tenant's jobs and each query carries its tenant id explicitly.
+    public DbSet<Outbox.OutboxJobRow> OutboxJobs => Set<Outbox.OutboxJobRow>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

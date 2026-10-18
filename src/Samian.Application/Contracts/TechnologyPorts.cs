@@ -32,3 +32,44 @@ public interface IEmailSender
 {
     Task SendAsync(string to, string subject, string body, CancellationToken cancellationToken = default);
 }
+
+// ---------------- Reservation pipeline (ROADMAP step 17) ----------------
+
+// The job PAYLOAD, not the storage row: Application says "this reservation must be fulfilled
+// eventually"; the outbox table in Infrastructure decides how it survives. The payload is frozen
+// at reservation time (sku, price, quantity) so the pipeline never has to re-read volatile state.
+public sealed record ReservationJob(
+    Guid TenantId,
+    Guid SaleEventId,
+    Guid ReservationId,
+    string Sku,
+    int Quantity,
+    decimal UnitPriceAmount,
+    string Currency,
+    string CustomerRef);
+
+// Staging is a PORT because "in the same transaction as the decrement" (brief line 21's guarantee)
+// is a use-case rule; the outbox table is an adapter rule. The implementation MUST NOT commit —
+// it stages on the same scoped DbContext and the unit of work's transaction is the only commit.
+public interface IReservationJobQueue
+{
+    Task StageAsync(ReservationJob job, CancellationToken cancellationToken = default);
+}
+
+// Read model of the pipeline for GET /api/jobs — "observable" in the brief (line 39) means a
+// reviewer can SEE Pending/Processing/Done/Dead without opening a database console.
+public sealed record JobResponse(
+    Guid Id,
+    string Status,
+    int Attempts,
+    DateTimeOffset NextAt,
+    string? Error,
+    Guid SaleEventId,
+    string Sku,
+    int Quantity);
+
+public interface IPipelineInspector
+{
+    // statusFilter: null = all; "Dead" = the DLQ view. Always scoped to the current tenant.
+    Task<IReadOnlyList<JobResponse>> GetJobsAsync(string? statusFilter, CancellationToken cancellationToken = default);
+}

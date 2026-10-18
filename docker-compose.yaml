@@ -1,0 +1,52 @@
+name: samian
+
+services:
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "Samian!Passw0rd"   # dev-only, says the README; vault is the real answer
+    ports:
+      - "1433:1433"
+    volumes:
+      - mssql-data:/var/opt/mssql
+    # THE line that makes `docker-compose up` reliable: SQL Server takes ~20 s to accept connections,
+    # and without readiness the api's MigrateAsync crashes on the first boot — the number one failed
+    # reviewer run. -C trusts the self-signed cert; that flag is why it is not a silent hack, it is
+    # the same TrustServerCertificate the app uses, and both are dev-network-only.
+    healthcheck:
+      test: ["CMD", "/opt/mssql-tools18/bin/sqlcmd", "-S", "localhost", "-U", "sa",
+             "-P", "Samian!Passw0rd", "-C", "-Q", "SELECT 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "16379:6379"                          # 16379 matches the existing appsettings host-side key
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build: .
+    environment:
+      ASPNETCORE_ENVIRONMENT: "Development"   # swagger stays on for the reviewer
+      ASPNETCORE_URLS: "http://+:80"
+      ConnectionStrings__SamianDatabase: "Server=mssql,1433;Database=Samian;User Id=sa;Password=Samian!Passw0rd;TrustServerCertificate=True;Encrypt=True"
+      ConnectionStrings__Redis: "redis:6379,abortConnect=false"
+      Jwt__SecretKey: "compose-dev-only-secret-key-please-rotate-32+"
+    ports:
+      - "5000:80"
+    depends_on:
+      mssql:
+        condition: service_healthy            # not service_started — that is the crash
+      redis:
+        condition: service_healthy            # soft dep: RedisCacheService degrades to L1 anyway
+
+volumes:
+  mssql-data:

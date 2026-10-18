@@ -14,6 +14,10 @@
     </PackageReference>    
     <PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="9.0.5" />
     <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="9.0.5" />
+    <!-- BackgroundService (OutboxWorker) lives here. Abstractions only, not the full Hosting meta-
+         package: the worker is written by Infrastructure but REGISTERED by the host, so Infrastructure
+         needs the base class, not the generic-host builder. -->
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="9.0.8" />
     <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="9.0.5" />
     <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="7.5.0" />
   </ItemGroup>

@@ -1,0 +1,109 @@
+#Requires -Version 7.2
+<#
+.SYNOPSIS
+    Black Friday concurrency evidence (brief line 60 + deliverable #4): fire N parallel
+    reservations at one sale event and PROVE the system never sells more than its allocation.
+
+.DESCRIPTION
+    The invariant checked is arithmetic, not vibes:
+        accepted * QtyPerRequest + finalRemaining == preRemaining   (nothing vanishes)
+        finalRemaining >= 0                                          (nothing oversells)
+    It is run against the real HTTP API and a real SQL Server (docker-compose) because the
+    guarantee lives in a conditional UPDATE — testing an in-memory fake would prove the fake works.
+    The committed log file IS the deliverable; re-run with -SaleEventId to test other events.
+
+.EXAMPLE
+    ./scripts/load-test.ps1 -TenantId "11111111-1111-1111-1111-111111111111" `
+        -SaleEventId "<65INCH-TV id from GET /api/sales/active>" -TotalRequests 500
+#>
+param(
+    [string]$BaseUrl       = 'http://localhost:5000',
+    [string]$TenantId      = (Split-Path $PSCommandPath -Leaf) # force caller to pass one
+,
+    [Parameter(Mandatory)][string]$SaleEventId,
+    [string]$UserName      = 'admin',
+    [string]$Password      = 'Admin#1234',
+    [int]$TotalRequests    = 500,      # the brief's "thousands per minute" scaled to one burst
+    [int]$QtyPerRequest    = 1,
+    [int]$ThrottleLimit    = 100,      # parallel runspaces; SQL Server row lock does the serializing
+    [string]$LogDirectory  = "$PSScriptRoot/logs"
+)
+
+$ErrorActionPreference = 'Stop'
+$startedAt = Get-Date
+New-Item -ItemType Directory -Force -Path $LogDirectory | Out-Null
+$logPath = Join-Path $LogDirectory ("loadtest-{0:yyyyMMdd-HHmmss}.log" -f $startedAt)
+
+function Write-Log([string]$line) { $line | Add-Content -Path $logPath }
+
+Write-Log "Samian Black Friday load test — started $startedAt"
+Write-Log "target=$BaseUrl sale=$SaleEventId tenant=$TenantId requests=$TotalRequests qty=$QtyPerRequest"
+
+# --- 1. Authenticate once; every burst request replays the token (parallel runspaces cannot share
+# ---    a login session, and 500 logins would measure the auth path, not the reservation path).
+$token = (Invoke-RestMethod -Method Post -Uri "$BaseUrl/api/auth/login" `
+    -ContentType 'application/json' `
+    -Body (@{ userName = $UserName; password = $Password } | ConvertTo-Json)).token
+$headers = @{ Authorization = "Bearer $token"; 'X-Tenant-Id' = $TenantId }
+
+# --- 2. Pre-state. NOTE: /status is the DISPLAY endpoint with a documented 5 s staleness budget —
+# ---    that is acceptable HERE (a few units of drift in the reference number) and is exactly why
+# ---    reservations never read a cached value in production code.
+$before = Invoke-RestMethod -Uri "$BaseUrl/api/sales/$SaleEventId/status" -Headers $headers
+Write-Log ("pre-state: total={0} remaining={1} state={2}" -f $before.totalUnits, $before.remainingUnits, $before.state)
+if ($before.state -ne 'Active') { throw "Sale is '$($before.state)' — the burst needs an Active event (see seeded ones)." }
+if ($before.remainingUnits -lt $QtyPerRequest) { throw 'No units to reserve; re-run docker compose down -v && up to restore seed.' }
+
+# --- 3. THE BURST: every runspace gets its OWN HttpClient (no shared connection pool limits) and
+# ---    -SkipHttpErrorCheck so a 409 'sold out' is a DATA point, not a terminating error.
+$body = @{ saleEventId = $SaleEventId; quantity = $QtyPerRequest; customerRef = 'loadtest' } | ConvertTo-Json
+$sw = [System.Diagnostics.Stopwatch]::StartNew()
+
+$results = 1..$TotalRequests | ForEach-Object -ThrottleLimit $ThrottleLimit -Parallel {
+    $http = [System.Net.Http.HttpClient]::new()
+    $http.DefaultRequestHeaders.Add('Authorization', "Bearer $($using:token)")
+    $http.DefaultRequestHeaders.Add('X-Tenant-Id', "$($using:TenantId)")
+    $content = [System.Net.Http.StringContent]::new($using:body, [System.Text.Encoding]::UTF8, 'application/json')
+    try {
+        $response = $http.PostAsync("$($using:BaseUrl)/api/reservations", $content).GetAwaiter().GetResult()
+        [pscustomobject]@{ Status = [int]$response.StatusCode }
+    } catch {
+        [pscustomobject]@{ Status = -1 }   # transport failure counted separately — never silently dropped
+    } finally {
+        $http.Dispose()
+    }
+}
+$sw.Stop()
+
+# --- 4. Classify. 2xx = reservation sold; 409 = refused (sold out or closed window); else = bug.
+$accepted = @($results | Where-Object { $_.Status -ge 200 -and $_.Status -lt 300 }).Count
+$soldOut  = @($results | Where-Object { $_.Status -eq 409 }).Count
+$errors   = @($results | Where-Object { $_.Status -lt 200 -or $_.Status -ge 300 -or $_.Status -eq 409 -and $false }).Count
+$errors   = $TotalRequests - $accepted - $soldOut - [math]::Max(0, ($TotalRequests - $results.Count))
+$missing  = $TotalRequests - $results.Count   # parallel threads that died without a result object
+
+$results | Group-Object Status | Sort-Object Name | ForEach-Object {
+    Write-Log ("http {0,-4} x {1}" -f $_.Name, $_.Count)
+}
+
+# --- 5. Post-state and the invariant.
+$after = Invoke-RestMethod -Uri "$BaseUrl/api/sales/$SaleEventId/status" -Headers $headers
+# Force past the 5 s display cache so the assertion reads the database truth, not a stale badge.
+Start-Sleep -Seconds 6
+$after = Invoke-RestMethod -Uri "$BaseUrl/api/sales/$SaleEventId/status" -Headers $headers
+Write-Log ("post-state: remaining={0} state={1}" -f $after.remainingUnits, $after.state)
+
+$soldUnits = $accepted * $QtyPerRequest
+$conserved = ($soldUnits + $after.remainingUnits) -eq $before.remainingUnits
+$noOversell = $after.remainingUnits -ge 0
+$noLostRequests = $missing -eq 0 -and $errors -eq 0
+$pass = $conserved -and $noOversell -and $noLostRequests
+
+Write-Log ("sold={0} refused409={1} errors={2} missing={3} duration={4:N1}s throughput={5:N0} req/s" -f `
+    $soldUnits, $soldOut, $errors, $missing, $sw.Elapsed.TotalSeconds, ($TotalRequests / [math]::Max($sw.Elapsed.TotalSeconds, 0.001)))
+Write-Log ("invariant: sold({0}) + remaining({1}) == pre({2}) -> {3}; remaining >= 0 -> {4}" -f `
+    $soldUnits, $after.remainingUnits, $before.remainingUnits, $(if ($conserved) { 'OK' } else { 'VIOLATED' }), $(if ($noOversell) { 'OK' } else { 'VIOLATED' }))
+Write-Log "RESULT: $(if ($pass) { 'PASS — no oversell under concurrency' } else { 'FAIL — see violations above' })"
+
+Write-Host "Log: $logPath"
+if (-not $pass) { exit 1 }

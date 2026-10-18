@@ -110,8 +110,8 @@ public sealed class UserRepository : IUserRepository
     public Task<User?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
         => _db.Users.FirstOrDefaultAsync(u => u.Id == id, cancellationToken);
 
-    public Task<User?> GetByUserNameAsync(string userName, CancellationToken cancellationToken = default)
-        => _db.Users.FirstOrDefaultAsync(u => u.UserName == userName, cancellationToken);
+    public Task<User?> GetByUserNameAsync(Guid tenantId, string userName, CancellationToken cancellationToken = default)
+        => _db.Users.FirstOrDefaultAsync(u => u.TenantId == tenantId && u.UserName == userName, cancellationToken);
 
     public async Task AddAsync(User user, CancellationToken cancellationToken = default)
     {

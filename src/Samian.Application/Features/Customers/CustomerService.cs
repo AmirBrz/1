@@ -1,4 +1,5 @@
 using Samian.Application.Common;
+using Samian.Application.Contracts;
 using Samian.Application.Validation;
 using Samian.Domain.Contracts;
 using Samian.Domain.Entities;
@@ -42,26 +43,35 @@ public sealed class CustomerService : ICustomerService
     private readonly ICustomerRepository _customers;
     private readonly IUnitOfWork _unitOfWork;
     private readonly IValidator<CreateCustomerRequest> _createValidator;
+    private readonly ITenantProvider _tenant;
 
     public CustomerService(
         ICustomerRepository customers,
         IUnitOfWork unitOfWork,
-        IValidator<CreateCustomerRequest> createValidator)
+        IValidator<CreateCustomerRequest> createValidator,
+        ITenantProvider tenant)
     {
         ArgumentNullException.ThrowIfNull(customers);
         ArgumentNullException.ThrowIfNull(unitOfWork);
         ArgumentNullException.ThrowIfNull(createValidator);
+        ArgumentNullException.ThrowIfNull(tenant);
 
         _customers = customers;
         _unitOfWork = unitOfWork;
         _createValidator = createValidator;
+        _tenant = tenant;
     }
 
     public async Task<CustomerResponse> CreateAsync(CreateCustomerRequest request, CancellationToken cancellationToken = default)
     {
         _createValidator.EnsureValid(request);
 
-        var customer = Customer.Create(request.Name, request.Address, request.Email);
+        // A customer belongs to the signed-in tenant; without the id here it would be stored with
+        // TenantId = Guid.Empty and the global filter would make it invisible to every real-tenant read.
+        if (!_tenant.HasTenant || _tenant.TenantId == Guid.Empty)
+            throw new AppValidationException("A tenant context is required to create a customer (sign in to a tenant, or send X-Tenant-Id).");
+
+        var customer = Customer.Create(request.Name, request.Address, request.Email, _tenant.TenantId);
 
         await _customers.AddAsync(customer, cancellationToken);
         await _unitOfWork.SaveChangesAsync(cancellationToken);

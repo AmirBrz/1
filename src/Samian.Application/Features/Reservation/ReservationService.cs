@@ -49,6 +49,7 @@ public sealed class ReservationService : IReservationService
     private readonly IClock _clock;
     private readonly ITenantProvider _tenant;
     private readonly ICacheService _cache;
+    private readonly IReservationJobQueue _jobs;
     private readonly IValidator<ReserveRequest> _reserveValidator;
 
     public ReservationService(
@@ -57,12 +58,15 @@ public sealed class ReservationService : IReservationService
         IClock clock,
         ITenantProvider tenant,
         ICacheService cache,
+        IReservationJobQueue jobs,
         IValidator<ReserveRequest> reserveValidator)
     {
         ArgumentNullException.ThrowIfNull(sales);
         ArgumentNullException.ThrowIfNull(unitOfWork);
         ArgumentNullException.ThrowIfNull(clock);
         ArgumentNullException.ThrowIfNull(tenant);
+        ArgumentNullException.ThrowIfNull(cache);
+        ArgumentNullException.ThrowIfNull(jobs);
         ArgumentNullException.ThrowIfNull(reserveValidator);
 
         _sales = sales;
@@ -70,6 +74,7 @@ public sealed class ReservationService : IReservationService
         _clock = clock;
         _tenant = tenant;
         _cache = cache;
+        _jobs = jobs;
         _reserveValidator = reserveValidator;
     }
 
@@ -108,14 +113,26 @@ public sealed class ReservationService : IReservationService
 
         var reservation = Reservation.Record(tenantId, sale.Id, sale.Sku, request.Quantity, request.CustomerRef, now);
         await _sales.AddReservationAsync(reservation, cancellationToken);
+
+        // THE outbox row (step 17): staged on the SAME context INSIDE the open transaction, so
+        // decrement + reservation + job commit together or not at all. "Job accepted, then lost"
+        // — the exact incident failure — becomes unconstructible: there is no committed decrement
+        // without its job row, and no job row without the units being sold.
+        await _jobs.StageAsync(new ReservationJob(
+            tenantId, sale.Id, reservation.Id, sale.Sku, request.Quantity,
+            sale.OfferPrice.Amount, sale.OfferPrice.Currency, request.CustomerRef), cancellationToken);
+
         await _unitOfWork.SaveChangesAsync(cancellationToken);   // joins the open transaction
 
         await _unitOfWork.CommitTransactionAsync(cancellationToken);
 
-        // Step 17 inserts the outbox-job staging HERE (before commit); the key delete stays after it.
+        // The counter just moved, so the display value is wrong by one reservation. Delete the
+        // volatile key AFTER the commit (a delete before a rolled-back transaction would have
+        // repopulated the cache from the old value); the metadata key survives unchanged.
         await _cache.RemoveAsync(CacheKeys.SaleStatus(tenantId, sale.Id), cancellationToken);
-        // 6. Answer immediately — order creation, warehouse sync and notification happen out of band.
-        // TODO Step 12/17: delete tenant:{t}:sale:{id}:status here, and enqueue the pipeline job.
+
+        // 6. Answer immediately — order creation, warehouse sync and notification run out of band
+        //    in the OutboxWorker; GET /api/jobs makes the pipeline observable.
         return new ReservationResponse(
             reservation.Id, tenantId, sale.Id, sale.Sku, request.Quantity,
             sale.OfferPrice.Amount, sale.OfferPrice.Currency, now);

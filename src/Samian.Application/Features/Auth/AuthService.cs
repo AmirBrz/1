@@ -12,21 +12,26 @@ namespace Samian.Application.Features.Auth;
 // implementation of "authenticate a user" sit together, so reading the file tells you the whole use
 // case. This is the vertical-slice alternative to a Dtos/ + Interfaces/ + Services/ + Validators/
 // matrix, and it is why no controller needs to know anything about users.
-public sealed record RegisterRequest(string UserName, string Password)
+public sealed record RegisterRequest(string UserName, string Password, Guid TenantId)
 {
     // Optional extra: shows that a request can carry fields the domain does not model yet, without
     // forcing them through User.Create().
     public string? Mobile { get; init; }
 }
 
-public sealed record LoginRequest(string UserName, string Password);
+// The tenant is part of the CREDENTIAL, not an ambient header: the same user name can exist in two
+// tenants, and "which tenant am I signing into" is a fact the caller states when authenticating. From
+// this moment every downstream read (stock availability, reservations) is scoped to THIS tenant, read
+// back from the signed-in user's token — never re-trusted from a request header.
+public sealed record LoginRequest(string UserName, string Password, Guid TenantId);
 
 public sealed record AuthResponse(
     string Token,
     DateTimeOffset ExpiresAtUtc,
     Guid UserId,
     string UserName,
-    string Role);
+    string Role,
+    Guid TenantId);
 
 public interface IAuthService
 {
@@ -49,6 +54,8 @@ public sealed class RegisterRequestValidator : IValidator<RegisterRequest>
             "Password must not be the same as the user name.");
         messages.AddIf(target.Mobile is not null && !RegexRules.IranianMobile().IsMatch(target.Mobile),
             "Mobile must look like 09xxxxxxxxx or +989xxxxxxxxx.");
+        messages.AddIf(target.TenantId == Guid.Empty,
+            "A tenant is required to register: an account belongs to exactly one tenant.");
 
         return messages.ToList();
     }
@@ -64,6 +71,8 @@ public sealed class LoginRequestValidator : IValidator<LoginRequest>
         // able to sign in, so login checks "is this even a user name", and the hash check does the rest.
         messages.AddIfNot(RegexRules.UserName().IsMatch(target.UserName), "User name is not in a valid format.");
         messages.AddIf(string.IsNullOrEmpty(target.Password), "Password is required.");
+        // The tenant is part of the credential; a missing one is not a slow-path guess, it is refused.
+        messages.AddIf(target.TenantId == Guid.Empty, "A tenant is required to log in (it is part of the credential).");
 
         return messages.ToList();
     }
@@ -116,13 +125,14 @@ public sealed class AuthService : IAuthService
         // Uniqueness is an APPLICATION rule, not a domain rule: User.Create() cannot know what is in the
         // database, and the entity should not have to. The database unique index is the real guard —
         // this check only exists to produce a friendly 409 instead of a constraint violation.
-        var existing = await _users.GetByUserNameAsync(request.UserName, cancellationToken);
+        // It is PER TENANT now: the same name in two tenants is two legitimate accounts.
+        var existing = await _users.GetByUserNameAsync(request.TenantId, request.UserName, cancellationToken);
         if (existing is not null)
-            throw new BusinessConflictException($"User name '{request.UserName}' is already taken.");
+            throw new BusinessConflictException($"User name '{request.UserName}' is already taken in this tenant.");
 
         // Hash here, never inside the entity: the domain must not know PBKDF2 exists, but it must refuse
         // to hold a plain password — which is why User.Create's parameter is named passwordHash.
-        var user = User.Create(request.UserName, _passwordHasher.Hash(request.Password));
+        var user = User.Create(request.TenantId, request.UserName, _passwordHasher.Hash(request.Password));
 
         await _users.AddAsync(user, cancellationToken);
         await _unitOfWork.SaveChangesAsync(cancellationToken);
@@ -134,7 +144,10 @@ public sealed class AuthService : IAuthService
     {
         _loginValidator.EnsureValid(request);
 
-        var user = await _users.GetByUserNameAsync(request.UserName, cancellationToken);
+        // The (tenant, user name) pair is the identity: the same name under a different tenant is a
+        // different account, and a login aimed at the wrong tenant finds nothing (same 401 as a wrong
+        // password — no signal about whether the name exists in ANOTHER tenant).
+        var user = await _users.GetByUserNameAsync(request.TenantId, request.UserName, cancellationToken);
 
         // Same exception (and therefore the same 401 body) whether the name is unknown or the password
         // is wrong: an endpoint that answers "no such user" is a user-name enumeration oracle.
@@ -151,8 +164,8 @@ public sealed class AuthService : IAuthService
         var now = _clock.UtcNow;
         var expiresAtUtc = now.AddMinutes(_jwtOptions.TokenLifetimeMinutes);
 
-        var token = _tokenGenerator.GenerateToken(user.Id, user.UserName, user.Role, expiresAtUtc);
+        var token = _tokenGenerator.GenerateToken(user.Id, user.UserName, user.Role, user.TenantId, expiresAtUtc);
 
-        return new AuthResponse(token, expiresAtUtc, user.Id, user.UserName, user.Role);
+        return new AuthResponse(token, expiresAtUtc, user.Id, user.UserName, user.Role, user.TenantId);
     }
 }

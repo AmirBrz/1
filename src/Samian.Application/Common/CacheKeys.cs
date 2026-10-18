@@ -20,6 +20,11 @@ public static class CacheKeys
     public static string SaleStatus(Guid tenantId, Guid saleEventId) => $"tenant:{tenantId}:sale:{saleEventId}:status";
 
     public static string SaleMetadata(Guid tenantId, Guid saleEventId) => $"tenant:{tenantId}:sale:{saleEventId}:metadata";
+
+    // The tenant registry is the ONE key not namespaced by tenant — it is what names them.
+    // The burst hits this on every request through the tenant middleware, so caching it is
+    // the difference between "isolation" and "isolation plus a database round-trip per call".
+    public static string TenantRegistry() => "tenants:registry";
 }
 
 // TTLs are the STALENESS BUDGET the README documents (brief line 46): display values may lag by
@@ -35,4 +40,9 @@ public static class CacheDurations
     public static readonly TimeSpan SaleStatus = TimeSpan.FromSeconds(5);
 
     public static readonly TimeSpan SaleMetadata = TimeSpan.FromMinutes(5);
+
+    // Tenants change when onboarding does, not when reserving — five minutes of staleness here
+    // means a brand-new tenant may take up to five minutes to pass header validation. Accepted
+    // trade-off (documented): the alternative is a DB read on every burst request.
+    public static readonly TimeSpan TenantRegistry = TimeSpan.FromMinutes(5);
 }

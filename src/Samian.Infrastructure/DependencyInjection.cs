@@ -7,6 +7,7 @@ using Samian.Domain.Contracts;
 using Samian.Infrastructure.Caching;
 using Samian.Infrastructure.Messaging;
 using Samian.Infrastructure.Notifications;
+using Samian.Infrastructure.Outbox;
 using Samian.Infrastructure.Persistence;
 using Samian.Infrastructure.Persistence.Repositories;
 using Samian.Infrastructure.Security;
@@ -29,6 +30,7 @@ public static class DependencyInjection
         AddCaching(services, configuration);
         AddSecurity(services, configuration);
         AddMessaging(services);
+        AddPipeline(services);
 
         return services;
     }
@@ -96,5 +98,16 @@ public static class DependencyInjection
         // service provider, and those handlers take repositories. A singleton dispatcher would capture the
         // ROOT provider and hand handlers a DbContext from another request — the captive-dependency bug.
         services.AddScoped<IDomainEventDispatcher, DomainEventDispatcher>();
+    }
+
+    private static void AddPipeline(IServiceCollection services)
+    {
+        // Step 17: the outbox queue STAGES on the scoped context (no commit of its own), so it must
+        // share the reservation's scope — same captive-dependency doctrine as the event dispatcher.
+        services.AddScoped<IReservationJobQueue, ReservationJobQueue>();
+        services.AddScoped<IPipelineInspector, PipelineInspector>();
+
+        // The worker is a singleton HOST service that creates its own scopes — registering it here
+        // keeps the wiring in Infrastructure while Program.cs only says AddHostedService<OutboxWorker>.
     }
 }

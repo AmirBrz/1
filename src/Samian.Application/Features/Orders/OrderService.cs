@@ -133,6 +133,7 @@ public sealed class OrderService : IOrderService
 {
     private readonly IOrderRepository _orders;
     private readonly IProductRepository _products;
+    private readonly ICustomerRepository _customers;
     private readonly IUnitOfWork _unitOfWork;
     private readonly IClock _clock;
     private readonly IDocumentNumberGenerator _numberGenerator;
@@ -151,6 +152,7 @@ public sealed class OrderService : IOrderService
     public OrderService(
         IOrderRepository orders,
         IProductRepository products,
+        ICustomerRepository customers,
         IUnitOfWork unitOfWork,
         IClock clock,
         IDocumentNumberGenerator numberGenerator,
@@ -165,6 +167,7 @@ public sealed class OrderService : IOrderService
     {
         ArgumentNullException.ThrowIfNull(orders);
         ArgumentNullException.ThrowIfNull(products);
+        ArgumentNullException.ThrowIfNull(customers);
         ArgumentNullException.ThrowIfNull(unitOfWork);
         ArgumentNullException.ThrowIfNull(clock);
         ArgumentNullException.ThrowIfNull(numberGenerator);
@@ -179,6 +182,7 @@ public sealed class OrderService : IOrderService
 
         _orders = orders;
         _products = products;
+        _customers = customers;
         _unitOfWork = unitOfWork;
         _clock = clock;
         _numberGenerator = numberGenerator;
@@ -196,7 +200,20 @@ public sealed class OrderService : IOrderService
     {
         _createValidator.EnsureValid(request);
 
-        var order = Order.Create(request.CustomerId, request.Currency);
+        // The order's tenant comes from the CREDENTIAL, exactly like the sale/reservation paths — a
+        // draft must be born inside the signed-in user's tenant or the global filter will hide it the
+        // moment it is written (TenantId = Guid.Empty rows are invisible to every real-tenant read).
+        var tenantId = RequireTenant();
+
+        // Cross-tenant guard: a caller cannot open an order for a customer that lives in another
+        // tenant. The customer store is loaded under the ambient filter, so a foreign id reads back
+        // null and answers 404 — the same "not yours = not here" rule every other tenant-scoped id uses.
+        var customer = await _customers.GetByIdAsync(request.CustomerId, cancellationToken)
+                       ?? throw new ResourceNotFoundException("Customer", request.CustomerId);
+        if (customer.TenantId != tenantId)
+            throw new ResourceNotFoundException("Customer", request.CustomerId);
+
+        var order = Order.Create(request.CustomerId, request.Currency, tenantId);
 
         // The number is taken at creation, not at placement: in an ERP a draft is already a document
         // somebody can quote, and a gap-free counter must not be advanced by a draft that is thrown away.
@@ -213,10 +230,9 @@ public sealed class OrderService : IOrderService
 
     public async Task<OrderResponse> AddLineAsync(Guid orderId, AddOrderLineRequest request, CancellationToken cancellationToken = default)
     {
-        var tenantId = _tenant.HasTenant && _tenant.TenantId != Guid.Empty
-     ? _tenant.TenantId
-     : throw new AppValidationException("A tenant context is required to reserve (X-Tenant-Id).");
-
+        // Reaffirm the tenant before touching the order — the product lookup below already filters by
+        // it, so a foreign ProductId simply reads back as "not found" and cannot be added to the line.
+        RequireTenant();
 
         _addLineValidator.EnsureValid(request);
 
@@ -429,6 +445,17 @@ public sealed class OrderService : IOrderService
             },
             CacheDurations.OrderReadModels,
             cancellationToken);
+    }
+
+    private Guid RequireTenant()
+    {
+        // Fail-fast, shared by every write: a request with no resolved tenant (no signed-in credential,
+        // no validated header) must not run a query at all, because a missing filter is the silent,
+        // cross-tenant failure this platform is built to prevent.
+        if (!_tenant.HasTenant || _tenant.TenantId == Guid.Empty)
+            throw new AppValidationException("A tenant context is required (sign in to a tenant, or send X-Tenant-Id).");
+
+        return _tenant.TenantId;
     }
 
     private async Task<Order> RequireOrderAsync(Guid orderId, CancellationToken cancellationToken)

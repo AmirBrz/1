@@ -23,7 +23,9 @@ public interface IJwtTokenGenerator
     // expiresAtUtc is a parameter instead of `DateTime.UtcNow.AddHours(2)` inside the implementation:
     // the token lifetime is a policy decision made by the use case, and baking the clock into the
     // generator would make "does it really expire?" untestable.
-    string GenerateToken(Guid userId, string userName, string role, DateTimeOffset expiresAtUtc);
+    // tenantId is stamped INTO the token so the signed-in caller's tenant travels with every request:
+    // the app reads the tenant back from the credential instead of trusting a client-supplied header.
+    string GenerateToken(Guid userId, string userName, string role, Guid tenantId, DateTimeOffset expiresAtUtc);
 }
 
 // The domain decided WHEN a password must be hashed (User.Create takes a hash, never a plain

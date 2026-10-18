@@ -13,6 +13,11 @@ public class Product : AggregateRoot, IMultiTenant
 
     public Guid TenantId { get; private set; }
 
+    // The stock-keeping unit. A Black Friday sale event is declared FOR a SKU, so the warehouse row
+    // the out-of-band pipeline decrements must be findable by that same key — name is display text
+    // ("65 inch 4K TV"), the SKU is the contract between the sale, the reservation and the stock.
+    public string Sku { get; private set; } = null!;
+
     public string Name { get; private set; } = null!;
 
     // Money, not decimal: a price without a currency is not a price.
@@ -25,20 +30,30 @@ public class Product : AggregateRoot, IMultiTenant
     // not a test, not the seed data. A factory that cannot be called is not a factory.
     // we will replace `Guid.Empty` defaults with the real ITenantProvider value at each call site.
     // it's empty and optional for seed and success compilation.
-    public static Product Create(string name, Money price, int stockQuantity = 0, Guid tenantId = default)
+    public static Product Create(string name, Money price, int stockQuantity = 0, Guid tenantId = default, string? sku = null)
     {
         Guard.AgainstEmpty(name, () => new DomainException("Product name is required."));
         Guard.AgainstNegative(stockQuantity, () => new DomainException("Stock cannot be negative."));
+
+        // A SKU always exists: supplied verbatim when the caller knows the warehouse code, otherwise
+        // derived from the name so no product can be born unmappable to a sale.
+        var normalizedSku = string.IsNullOrWhiteSpace(sku) ? Slug(name) : sku.Trim();
+        Guard.AgainstEmpty(normalizedSku, () => new DomainException("Product SKU is required."));
 
         return new Product
         {
             Id = Guid.NewGuid(),
             TenantId = tenantId,
+            Sku = normalizedSku,
             Name = name,
             Price = price,
             StockQuantity = stockQuantity
         };
     }
+
+    // Uppercase, spaces to hyphens: "65 inch 4K TV" -> "65-INCH-4K-TV". A readable default, not a
+    // claim to be a real warehouse coding scheme (that would be a domain service or an external feed).
+    private static string Slug(string value) => value.Trim().ToUpperInvariant().Replace(' ', '-');
 
     public Product Rename(string name)
     {

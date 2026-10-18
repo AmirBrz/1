@@ -6,7 +6,8 @@ Content-Type: application/json
 
 {
   "userName": "admin",
-  "password": "Admin#1234"
+  "password": "Admin#1234",
+  "tenantId: ""
 }
 
 ### Copy "token" from the response above into a variable for every call below.

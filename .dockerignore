@@ -1,0 +1,8 @@
+src/**/bin/
+src/**/obj/
+**/*.db
+.git/
+.vs/
+tests/
+*.md
+smoke.ps1

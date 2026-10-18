@@ -6,9 +6,11 @@ using Samian.Application;
 using Samian.Application.Configuration;
 using Samian.Application.Contracts;
 using Samian.Infrastructure;
+using Samian.Infrastructure.Outbox;
 using Samian.Infrastructure.Persistence;
 using Samian.WebApi.Identity;
 using Samian.WebApi.Middleware;
+using Samian.WebApi.Tenancy;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -29,11 +31,21 @@ var pricingOptions = builder.Configuration.GetSection(PricingOptions.SectionName
 builder.Services.AddApplication(pricingOptions);
 builder.Services.AddInfrastructure(builder.Configuration);
 
+// The fulfilment pipeline (Step 17): a singleton BackgroundService that creates its own DI scopes per
+// poll, so registering the HOSTED service is the only thing the host says about it — the queue,
+// inspector and worker internals stay inside Infrastructure (onion rule: the host wires, never implements).
+builder.Services.AddHostedService<OutboxWorker>();
+
 // ICurrentUser is implemented HERE, not in Infrastructure: reading claims is an HTTP concern, and the
 // host is as much an adapter as the database is. Infrastructure would need an ASP.NET reference to do
 // it, which is exactly the kind of leak the onion is arranged to prevent.
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<ICurrentUser, HttpContextCurrentUser>();
+
+// Same adapter logic as ICurrentUser: the TENANT port is implemented here because reading and
+// validating X-Tenant-Id is an HTTP concern. This registration replaced the NullTenantProvider
+// placeholder — Application no longer registers a tenant source at all.
+builder.Services.AddScoped<ITenantProvider, HttpContextTenantProvider>();
 
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
@@ -64,10 +76,15 @@ else
 app.UseAuthentication();
 app.UseAuthorization();
 
+// AFTER auth (an unauthenticated call to a tenant route should answer 401 before 400), BEFORE
+// MapControllers — so a missing or unknown X-Tenant-Id produces 400 and NO query runs at all.
+app.UseSamianTenantResolution();
+
 app.MapControllers();
 
-// Create-and-seed on start. Deliberately not "migrate on start": see DatabaseInitializer for the
-// trade-off, and note that a multi-instance deployment must run this once (a migration lock, or an
+// Migrate-and-seed on start (DatabaseInitializer): the brief's "docker-compose up, no manual
+// steps" requirement means schema AND data come up with the process. MigrateAsync is idempotent;
+// note that a multi-instance deployment must still run this once (a migration lock, or an
 // entrypoint job), not per node.
 await app.Services.InitializeAsync(CancellationToken.None);
 
@@ -125,6 +142,9 @@ static class SamianHostSetup
 
         return services;
     }
+
+    public static IApplicationBuilder UseSamianTenantResolution(this IApplicationBuilder app) =>
+        app.UseMiddleware<TenantMiddleware>();
 
     public static IServiceCollection AddSamianSwagger(this IServiceCollection services)
     {
